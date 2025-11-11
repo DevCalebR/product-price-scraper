@@ -1,0 +1,264 @@
+import requests
+from bs4 import BeautifulSoup
+import csv
+import logging
+import time
+import argparse
+from datetime import datetime
+from pathlib import Path
+from typing import List, Dict, Optional
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+class ProductScraper:
+    """
+    A configurable web scraper for extracting product information from e-commerce sites.
+    """
+    
+    def __init__(self, url: str, product_selector: str, name_selector: str, 
+                 price_selector: str, max_retries: int = 3, delay: float = 1.0):
+        """
+        Initialize the scraper with target URL and CSS selectors.
+        
+        Args:
+            url: Target website URL
+            product_selector: CSS selector for product containers
+            name_selector: CSS selector for product names (relative to product container)
+            price_selector: CSS selector for product prices (relative to product container)
+            max_retries: Maximum number of retry attempts for failed requests
+            delay: Delay between requests in seconds
+        """
+        self.url = url
+        self.product_selector = product_selector
+        self.name_selector = name_selector
+        self.price_selector = price_selector
+        self.max_retries = max_retries
+        self.delay = delay
+        
+        # Headers to mimic a real browser and avoid blocking
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        }
+    
+    def fetch_page(self) -> Optional[BeautifulSoup]:
+        """
+        Fetch and parse the target webpage with retry logic.
+        
+        Returns:
+            BeautifulSoup object if successful, None otherwise
+        """
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                logger.info(f"Fetching {self.url} (attempt {attempt}/{self.max_retries})")
+                response = requests.get(self.url, headers=self.headers, timeout=10)
+                response.raise_for_status()
+                
+                logger.info(f"Successfully fetched page (Status: {response.status_code})")
+                return BeautifulSoup(response.text, "html.parser")
+                
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Attempt {attempt} failed: {e}")
+                if attempt < self.max_retries:
+                    wait_time = self.delay * attempt
+                    logger.info(f"Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error("Max retries reached. Failed to fetch page.")
+                    return None
+    
+    def clean_price(self, price_text: str) -> str:
+        """
+        Clean and normalize price text by removing currency symbols and extra whitespace.
+        
+        Args:
+            price_text: Raw price text from webpage
+            
+        Returns:
+            Cleaned price string
+        """
+        # Remove common currency symbols and extra whitespace
+        cleaned = price_text.strip()
+        cleaned = cleaned.replace('$', '').replace('€', '').replace('£', '')
+        cleaned = cleaned.replace(',', '')
+        return cleaned.strip()
+    
+    def extract_products(self, soup: BeautifulSoup) -> List[Dict[str, str]]:
+        """
+        Extract product information from the parsed webpage.
+        
+        Args:
+            soup: BeautifulSoup object of the webpage
+            
+        Returns:
+            List of dictionaries containing product data
+        """
+        products = []
+        product_elements = soup.select(self.product_selector)
+        
+        if not product_elements:
+            logger.warning(f"No products found using selector: {self.product_selector}")
+            return products
+        
+        logger.info(f"Found {len(product_elements)} product(s)")
+        
+        for idx, item in enumerate(product_elements, 1):
+            try:
+                # Extract name
+                name_element = item.select_one(self.name_selector)
+                name = name_element.text.strip() if name_element else "N/A"
+                
+                # Extract price
+                price_element = item.select_one(self.price_selector)
+                price = self.clean_price(price_element.text) if price_element else "N/A"
+                
+                # Add timestamp for tracking
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                products.append({
+                    "product_name": name,
+                    "price": price,
+                    "timestamp": timestamp,
+                    "source_url": self.url
+                })
+                
+                logger.info(f"Extracted product {idx}: {name} - {price}")
+                
+            except Exception as e:
+                logger.error(f"Error extracting product {idx}: {e}")
+                continue
+        
+        return products
+    
+    def save_to_csv(self, products: List[Dict[str, str]], output_path: str = "data/products.csv"):
+        """
+        Save extracted products to a CSV file.
+        
+        Args:
+            products: List of product dictionaries
+            output_path: Path to output CSV file
+        """
+        if not products:
+            logger.warning("No products to save.")
+            return
+        
+        # Ensure data directory exists
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            with open(output_path, "w", newline="", encoding="utf-8") as file:
+                fieldnames = ["product_name", "price", "timestamp", "source_url"]
+                writer = csv.DictWriter(file, fieldnames=fieldnames)
+                
+                writer.writeheader()
+                writer.writerows(products)
+            
+            logger.info(f"Successfully saved {len(products)} product(s) to {output_path}")
+            
+        except Exception as e:
+            logger.error(f"Error saving to CSV: {e}")
+    
+    def scrape(self, output_path: str = "data/products.csv") -> bool:
+        """
+        Main scraping method that orchestrates the entire process.
+        
+        Args:
+            output_path: Path to output CSV file
+            
+        Returns:
+            True if scraping was successful, False otherwise
+        """
+        logger.info("Starting scrape operation...")
+        
+        # Fetch page
+        soup = self.fetch_page()
+        if not soup:
+            return False
+        
+        # Add delay to be respectful to the server
+        time.sleep(self.delay)
+        
+        # Extract products
+        products = self.extract_products(soup)
+        if not products:
+            logger.warning("No products extracted.")
+            return False
+        
+        # Save to CSV
+        self.save_to_csv(products, output_path)
+        
+        logger.info("Scrape operation completed successfully!")
+        return True
+
+
+def main():
+    """
+    Command-line interface for the product scraper.
+    """
+    parser = argparse.ArgumentParser(
+        description="Product Price Scraper - Extract product information from websites",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Basic usage with selectors
+  python scraper.py --url "https://example.com/products" \\
+                    --product-selector ".product" \\
+                    --name-selector ".name" \\
+                    --price-selector ".price"
+  
+  # With custom output file and retry settings
+  python scraper.py --url "https://example.com/products" \\
+                    --product-selector ".item" \\
+                    --name-selector "h2.title" \\
+                    --price-selector "span.cost" \\
+                    --output "my_products.csv" \\
+                    --max-retries 5 \\
+                    --delay 2.0
+        """
+    )
+    
+    parser.add_argument("--url", required=True, help="Target website URL")
+    parser.add_argument("--product-selector", required=True, 
+                       help="CSS selector for product containers")
+    parser.add_argument("--name-selector", required=True,
+                       help="CSS selector for product names (relative to product container)")
+    parser.add_argument("--price-selector", required=True,
+                       help="CSS selector for product prices (relative to product container)")
+    parser.add_argument("--output", default="data/products.csv",
+                       help="Output CSV file path (default: data/products.csv)")
+    parser.add_argument("--max-retries", type=int, default=3,
+                       help="Maximum number of retry attempts (default: 3)")
+    parser.add_argument("--delay", type=float, default=1.0,
+                       help="Delay between requests in seconds (default: 1.0)")
+    
+    args = parser.parse_args()
+    
+    # Create and run scraper
+    scraper = ProductScraper(
+        url=args.url,
+        product_selector=args.product_selector,
+        name_selector=args.name_selector,
+        price_selector=args.price_selector,
+        max_retries=args.max_retries,
+        delay=args.delay
+    )
+    
+    success = scraper.scrape(output_path=args.output)
+    
+    if not success:
+        logger.error("Scraping failed. Please check your selectors and try again.")
+        exit(1)
+
+
+if __name__ == "__main__":
+    main()
