@@ -1,0 +1,16 @@
+# Python
+*.pyc
+__pycache__/
+venv/
+env/
+
+# Data files
+data/*.csv
+*.csv
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
