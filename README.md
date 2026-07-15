@@ -1,6 +1,6 @@
 # Product Price Scraper
 
-A flexible, production-ready web scraper for extracting product information from e-commerce websites. Built with Python, this tool allows you to scrape product names and prices using custom CSS selectors.
+A configurable Python web scraper for extracting product names and prices from e-commerce pages using custom CSS selectors.
 
 ## Features
 
